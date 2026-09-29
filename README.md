@@ -185,3 +185,239 @@ Empat jalur independen berhasil menguji validasi `a`, kasus dua akar real,
 akar real kembar, dan tidak adanya akar real. Setiap decision serta seluruh
 klasifikasi diskriminan pada source code tercakup, sehingga path testing
 memberikan cakupan cabang yang lengkap untuk program ini.
+
+---
+
+# Analisis Open-Source: `DispatcherServlet`
+
+## A. Identitas Source yang Dianalisis
+
+Analisis kedua ini menggunakan source asli Spring Framework, bukan implementasi
+yang disederhanakan. Ref yang dipakai adalah tag stabil `v6.2.10` pada repository
+resmi `spring-projects/spring-framework`.
+
+- **Package:** `org.springframework.web.servlet`
+- **Class:** `org.springframework.web.servlet.DispatcherServlet`
+- **Modul/path:** `spring-webmvc/src/main/java/org/springframework/web/servlet/DispatcherServlet.java`
+- **Ref/versi:** `v6.2.10`
+- **URL source:** <https://github.com/spring-projects/spring-framework/blob/v6.2.10/spring-webmvc/src/main/java/org/springframework/web/servlet/DispatcherServlet.java>
+- **Raw source:** <https://raw.githubusercontent.com/spring-projects/spring-framework/v6.2.10/spring-webmvc/src/main/java/org/springframework/web/servlet/DispatcherServlet.java>
+
+Nomor baris di bawah merujuk pada file pada ref tersebut. Analisis ini adalah
+analisis statis terhadap satu class; angka kompleksitas dan skenario di sini
+tidak menyatakan bahwa seluruh test suite Spring telah dijalankan.
+
+## B. Peran dan Fungsi Utama
+
+`DispatcherServlet` adalah **Front Controller** Spring MVC. Servlet ini menjadi
+titik masuk terpusat untuk request HTTP, lalu memilih handler, menjalankan
+handler melalui adapter, menangani exception, dan merender hasilnya. Class ini
+extends `FrameworkServlet`, sehingga lifecycle dan pemanggilan `doService` juga
+berhubungan dengan infrastruktur servlet Spring.
+
+Alur orkestrasi utamanya adalah:
+
+1. **Routing:** `getHandler(request)` mencoba setiap `HandlerMapping` secara
+   berurutan (sekitar baris 1281). Mapping menghasilkan `HandlerExecutionChain`
+   yang berisi handler dan interceptor.
+2. **Adaptasi handler:** `getHandlerAdapter(handler)` mencari
+   `HandlerAdapter` yang mendukung handler tersebut. Dengan demikian servlet
+   tidak perlu mengetahui semua tipe controller secara langsung.
+3. **Eksekusi lifecycle:** `applyPreHandle`, `ha.handle(...)`, dan
+   `applyPostHandle` menjalankan interceptor serta handler.
+4. **Exception:** exception diproses oleh `processHandlerException(...)` dan
+   daftar `HandlerExceptionResolver`, sehingga exception dapat diubah menjadi
+   `ModelAndView`.
+5. **Resolusi dan rendering:** `render(...)` memilih `View` langsung atau meminta
+   `ViewResolver` menerjemahkan nama view, lalu memanggil
+   `view.render(model, request, response)`.
+
+Selain itu, source juga menangani multipart request, locale, async processing,
+default view name, status HTTP, dan cleanup resource. Fitur tersebut menjadi
+bagian dari koordinasi Front Controller, bukan routing alternatif.
+
+## C. Struktur Class dan Method Nyata
+
+Deklarasi class pada source adalah:
+
+```java
+public class DispatcherServlet extends FrameworkServlet
+```
+
+Field strategi yang terlihat pada source antara lain `handlerMappings`,
+`handlerAdapters`, `handlerExceptionResolvers`, `viewResolvers`,
+`multipartResolver`, `localeResolver`, `viewNameTranslator`, dan
+`flashMapManager`. Flag `detectAllHandlerMappings`,
+`detectAllHandlerAdapters`, `detectAllHandlerExceptionResolvers`, dan
+`detectAllViewResolvers` mengatur apakah semua bean bertipe terkait dicari atau
+bean dengan nama standar yang digunakan.
+
+Inisialisasi strategi dilakukan oleh method nyata berikut:
+
+| Method | Perilaku yang dianalisis |
+|---|---|
+| `initHandlerMappings(ApplicationContext)` | Mencari semua `HandlerMapping`, atau bean `handlerMapping`; bila tidak ada, memakai default strategy dan mengaktifkan `parseRequestPath` bila mapping memakai path pattern. |
+| `initHandlerAdapters(ApplicationContext)` | Mencari semua `HandlerAdapter`, atau bean `handlerAdapter`; bila tidak ada, memakai default strategy. |
+| `initHandlerExceptionResolvers(ApplicationContext)` | Mencari resolver exception, atau bean `handlerExceptionResolver`; bila tidak ada, memakai default strategy. |
+| `initViewResolvers(ApplicationContext)` | Mencari semua `ViewResolver`, atau bean `viewResolver`; bila tidak ada, memakai default strategy. |
+| `doService(request, response)` | Menyiapkan attribute request dan meneruskan dispatch ke `doDispatch`. |
+| `doDispatch(request, response)` | Menjalankan alur routing, adapter, handler, async, exception, completion, dan multipart cleanup. |
+| `processDispatchResult(...)` | Mengubah exception menjadi `ModelAndView` bila perlu, merender view, lalu memicu completion. |
+| `render(ModelAndView, request, response)` | Menentukan locale, meresolusi view, menetapkan status, dan memanggil `View.render`. |
+
+## D. Analisis Percabangan Source
+
+### 1. `initHandlerMappings`
+
+Pada source baris 601-645, `detectAllHandlerMappings` membagi alur menjadi
+pencarian semua bean atau pencarian bean bernama `handlerMapping`. Jika hasil
+pencarian tidak mengisi field, `getDefaultStrategies(...)` memasang strategi
+default. Setelah itu loop memeriksa `mapping.usesPathPatterns()` dan berhenti
+ketika menemukan mapping yang memakai path pattern.
+
+Pola yang sama digunakan oleh `initHandlerAdapters`, `initHandlerExceptionResolvers`,
+dan `initViewResolvers` (baris 647-789), tetapi masing-masing memakai tipe
+strategi yang berbeda. Ini menunjukkan bahwa orkestrasi dapat dikonfigurasi
+melalui application context dan tetap memiliki fallback.
+
+### 2. `doDispatch`
+
+Pada source baris 1049-1146, cabang pentingnya adalah:
+
+- `checkMultipart` dapat mengembalikan request yang sudah dibungkus.
+- Jika `getHandler` mengembalikan `null`, `noHandlerFound(...)` dipanggil dan
+  dispatch selesai.
+- Untuk GET atau HEAD, `getLastModified(...)` dipakai; request GET dapat
+  selesai lebih awal bila `checkNotModified(...)` bernilai true.
+- `applyPreHandle(...)` dapat menghentikan pemrosesan.
+- Setelah `ha.handle(...)`, async yang dimulai menyebabkan return lebih awal.
+- Exception biasa disimpan sebagai `dispatchException`; `Throwable` dibungkus
+  menjadi `ServletException`, lalu keduanya diteruskan ke
+  `processDispatchResult(...)`.
+- Pada `finally`, request multipart dibersihkan untuk alur sinkron. Untuk alur
+  async, `applyAfterConcurrentHandlingStarted(...)` dipanggil dan status
+  multipart disimpan.
+
+`doDispatch` tidak langsung melakukan semua pekerjaan view. Ia menyerahkan hasil
+ke `processDispatchResult`, sehingga pemilihan handler, penanganan error, dan
+rendering tetap memiliki tanggung jawab yang terpisah.
+
+### 3. `processDispatchResult`
+
+Pada source baris 1148-1193, exception yang ada dibedakan menjadi
+`ModelAndViewDefiningException` atau diproses melalui
+`processHandlerException(...)`. Bila hasilnya bukan `null` dan belum di-clear,
+`render(...)` dipanggil. Jika async dimulai saat proses forward, method return
+sebelum `triggerAfterCompletion`; selain itu completion dipicu pada mapped
+handler.
+
+### 4. `render`
+
+Pada source baris 1400-1443, locale ditentukan dari `localeResolver` atau
+`request.getLocale()`. Jika `ModelAndView` memiliki nama view, nama itu
+di-resolve melalui `resolveViewNameInternal`, yang mencoba setiap
+`ViewResolver` sampai mendapat `View` non-null. Jika tidak memiliki nama view,
+source mengharapkan object `View` langsung. Kedua kegagalan tersebut
+melempar `ServletException`.
+
+Terakhir, status dari `ModelAndView` (bila ada) diterapkan ke response dan
+`view.render(...)` dipanggil. Exception saat rendering dicatat lalu dilempar
+kembali, bukan ditelan.
+
+## E. Control Flow Graph (CFG) `doDispatch`
+
+CFG berikut sengaja disederhanakan ke blok dasar utama. `catch` ditampilkan
+sebagai alur error, sedangkan operand short-circuit pada `||` dan `&&` tidak
+dijadikan node terpisah.
+
+```mermaid
+flowchart TD
+    A([Masuk doDispatch]) --> B[checkMultipart]
+    B --> C[getHandler]
+    C --> D{mappedHandler null?}
+    D -- Ya --> E[noHandlerFound lalu return]
+    D -- Tidak --> F[getHandlerAdapter]
+    F --> G{GET atau HEAD?}
+    G -- Ya --> H[getLastModified dan checkNotModified]
+    H --> I{GET tidak berubah?}
+    I -- Ya --> J[return]
+    I -- Tidak --> K[applyPreHandle]
+    G -- Tidak --> K
+    K --> L{preHandle false?}
+    L -- Ya --> M[return]
+    L -- Tidak --> N[ha.handle]
+    N --> O{async dimulai?}
+    O -- Ya --> P[return]
+    O -- Tidak --> Q[default view dan postHandle]
+    Q --> R[processDispatchResult]
+    R --> S{exception?}
+    S -- Ya --> T[resolve exception menjadi ModelAndView]
+    S -- Tidak --> U[gunakan ModelAndView]
+    T --> V{ModelAndView dapat dirender?}
+    U --> V
+    V -- Ya --> W[render]
+    V -- Tidak --> X[tanpa rendering]
+    W --> Y[afterCompletion]
+    X --> Y
+    E --> Z[finally: cleanup atau async completion]
+    J --> Z
+    M --> Z
+    P --> Z
+    Y --> Z
+    Z --> AA([Selesai])
+```
+
+## F. Cyclomatic Complexity Statis
+
+Untuk fokus yang dapat diaudit, kompleksitas dihitung hanya untuk method
+`doDispatch`, bukan seluruh class yang memiliki banyak method dan strategi.
+Dengan CFG ringkas di atas, terdapat **7 decision `if` eksplisit** yang
+dihitung sebagai blok keputusan:
+
+1. handler tidak ditemukan;
+2. method GET/HEAD;
+3. request GET tidak berubah;
+4. `preHandle` menghentikan request;
+5. async dimulai setelah handler;
+6. async dimulai pada blok `finally`;
+7. mapped handler ada pada blok async `finally`.
+
+Dengan konvensi tersebut, `V(G) = jumlah decision + 1 = 7 + 1 = 8`.
+Perhitungan ini **tidak memecah** operand `||`/`&&` menjadi decision tambahan
+dan **tidak menganggap `catch` sebagai decision independen**. Jika alat ukur
+yang dipakai memecah short-circuit atau menghitung exception edge, hasilnya
+dapat lebih tinggi; karena itu angka 8 harus dibaca sebagai metrik statis
+berdasarkan CFG ringkas yang didefinisikan di sini.
+
+## G. Independent Path dan Skenario Branch
+
+Skenario berikut memetakan cabang nyata pada source. Ini adalah rancangan
+path/branch test statis dan bukan klaim bahwa test framework Spring dijalankan.
+
+| ID | Kondisi/masukan konseptual | Cabang yang dicakup | Hasil yang diharapkan |
+|---|---|---|---|
+| DS-1 | Request tidak memiliki handler | `mappedHandler == null` | `noHandlerFound(...)`, dispatch return, lalu cleanup normal. |
+| DS-2 | Handler ditemukan, method GET, resource belum berubah | GET/HEAD true dan `checkNotModified` true untuk GET | Return sebelum handler dipanggil. |
+| DS-3 | `applyPreHandle(...)` mengembalikan `false` | preHandle false | Handler tidak dipanggil dan dispatch return. |
+| DS-4 | Handler menghasilkan `ModelAndView` sinkron | adapter handle, async false, exception null | `processDispatchResult` memanggil `render`, lalu after-completion. |
+| DS-5 | Handler melempar exception yang dapat di-resolve | `dispatchException != null` | `HandlerExceptionResolver` menghasilkan view/error response, lalu render atau completion. |
+| DS-6 | Handler memulai async | async true setelah `handle` atau pada finally | Tidak melakukan cleanup sinkron; memanggil concurrent-handling callback. |
+| DS-7 | `ViewResolver` tidak menemukan view | `resolveViewName(...) == null` | `render` melempar `ServletException`, bukan mengembalikan sukses palsu. |
+| DS-8 | Multipart request sinkron | `multipartRequestParsed` true | Resource multipart dibersihkan pada `finally`. |
+
+Skenario di atas mencakup cabang routing gagal, conditional GET, interceptor,
+eksekusi normal, exception resolution, async, kegagalan view resolution, dan
+cleanup multipart. Untuk pengujian runtime yang sesungguhnya masih diperlukan
+fixture Servlet API, application context, handler, adapter, resolver, dan
+mock response yang sesuai.
+
+## H. Kesimpulan Analisis
+
+`DispatcherServlet` memusatkan alur request tanpa mengikat dirinya pada satu
+jenis controller. `HandlerMapping` menentukan tujuan, `HandlerAdapter`
+menjembatani variasi handler, `HandlerExceptionResolver` mengubah error menjadi
+hasil yang dapat diproses, dan `ViewResolver`/`View` merender response. Branch
+pada `doDispatch` memperlihatkan bahwa return awal untuk no-handler,
+conditional GET, pre-handle, dan async sama pentingnya dengan jalur sukses.
+Dengan batasan scope yang dinyatakan, CFG ringkas menghasilkan cyclomatic
+complexity 8 dan delapan skenario statis untuk menelusuri jalur utamanya.
