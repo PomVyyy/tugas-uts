@@ -36,7 +36,7 @@ if __name__ == "__main__":
     main()
 ```
 
-## B. Deskripsi Program
+## B. Penjelasan Program
 
 Program menerima koefisien `a`, `b`, dan `c` untuk persamaan `ax^2 + bx + c = 0`.
 Program menolak input ketika `a = 0`, menghitung diskriminan `D = b^2 - 4ac`,
@@ -62,6 +62,14 @@ kemudian mengklasifikasikan dan menghitung akar sesuai nilai diskriminan.
 
 Node 2 mencakup tiga operasi input berurutan. Node 7 dan 8, serta node 10 dan
 11, dipisahkan agar perhitungan dan keluaran pada source code terlihat jelas.
+
+Catatan instruksi pendukung di luar alur keputusan `main()`:
+
+- `import math` memuat modul standar untuk `math.sqrt()` sebelum program
+  dijalankan; instruksi ini tidak menambah decision atau jalur runtime.
+- `if __name__ == "__main__": main()` menjadi gerbang pemanggilan `main()` saat
+  file dijalankan langsung. Karena seluruh alur yang diuji berada di dalam
+  `main()`, blok ini tidak menambah jalur independen pada CFG utama.
 
 ## D. Decision dan Kondisi
 
